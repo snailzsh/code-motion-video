@@ -139,6 +139,19 @@ const rand = (i, seed = 1) => {
 };
 // 当前生效的字幕
 const cueAt = t => CUES.find(c => t >= c.start && t < c.end) || null;
+// 中文字幕折行：超过一行时，在最接近中间的逗号处断开，两行尽量一样长，避免把"三十八万"拆成"三十 / 八万"
+const LINE_MAX = 17;
+function balanceLines(text) {
+  if (text.length <= LINE_MAX) return text;
+  let best = -1, bestScore = 1e9;
+  for (let i = 1; i < text.length - 1; i++) {
+    if (!"，、？！；：".includes(text[i])) continue;
+    const a = i + 1, b = text.length - a;
+    if (a > LINE_MAX || b > LINE_MAX) continue;
+    if (Math.abs(a - b) < bestScore) { bestScore = Math.abs(a - b); best = a; }
+  }
+  return best > 0 ? text.slice(0, best) + "<br>" + text.slice(best) : text;
+}
 
 // ============================================================
 // 3'. 舞台搭建：只在启动时执行一次，建好元素，之后只改属性
@@ -265,7 +278,7 @@ function render(t) {
   const last = CUES[CUES.length - 1];
   const c = cueAt(t) || (t >= last.end ? last : null), sub = $("sub");
   if (c) {
-    sub.textContent = c.text;
+    sub.innerHTML = balanceLines(c.text);
     const pin = ease.outExpo(prog(t, c.start, c.start + 0.18));
     const pout = c === last ? 1 : 1 - prog(t, c.end - 0.12, c.end);
     sub.style.opacity = Math.min(pin, pout);

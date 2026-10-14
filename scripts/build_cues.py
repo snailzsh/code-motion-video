@@ -132,9 +132,28 @@ def main():
         out_dir = os.path.dirname(os.path.abspath(a.out_audio))
         os.makedirs(out_dir, exist_ok=True)
         codec = ["-c:a", "pcm_s16le"] if a.out_audio.lower().endswith(".wav") else ["-c:a", "libmp3lame", "-q:a", "2"]
-        # 响度标准化：逐句 TTS 拼出来通常偏轻（实测可低到 -33 LUFS），不处理直接出片会很小声
-        af = ["-af", f"loudnorm=I={a.lufs}:TP=-1.5:LRA=11", "-ar", str(a.rate)] if a.lufs else []
-        run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", lst, *af, *codec, a.out_audio])
+        joined = os.path.join(tmp, "joined.wav")
+        run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", lst, "-c:a", "pcm_s16le", joined])
+        af = []
+        if a.lufs:
+            # 响度标准化：逐句 TTS 拼出来通常偏轻（实测 -16 到 -33 LUFS），单遍 loudnorm 对真人语音常常调不到位。
+            # 做法：整体加增益到目标响度 → 限幅器把峰值压在 -2 dBFS 以下 → 实测，差得多就再补一点增益（最多 3 轮）。
+            def measure(path, chain):
+                p = subprocess.run(["ffmpeg", "-hide_banner", "-i", path, "-af", (chain + "," if chain else "") +
+                                    "ebur128", "-f", "null", "-"], capture_output=True, text=True)
+                v = re.findall(r"I:\s+(-?[\d.]+) LUFS", p.stderr)
+                return float(v[-1]) if v else None
+            base = measure(joined, "")
+            if base is not None:
+                g = a.lufs - base
+                for _ in range(3):
+                    chain = f"volume={g:.2f}dB,alimiter=limit=0.79:attack=2:release=50:level=false"
+                    got = measure(joined, chain)
+                    if got is None or abs(a.lufs - got) <= 0.4:
+                        break
+                    g += a.lufs - got
+                af = ["-af", chain, "-ar", str(a.rate)]
+        run(["ffmpeg", "-y", "-v", "error", "-i", joined, *af, *codec, a.out_audio])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
