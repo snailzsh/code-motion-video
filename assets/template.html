@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>代码动效 · 起手模板</title>
+<!--
+  起手模板（同时是一条可直接渲染的 12 秒竖屏样片：「一张纸折 42 次」）。
+
+  规则只有一条：画面上每个值都只由时间 t 算出来。
+  - render(t) 是唯一改画面的地方，任意顺序调用、调用多少次，结果都一样。
+  - 不用 CSS transition / 自走的 CSS animation / setTimeout / setInterval / Math.random。
+  - 需要随机就用下面的 rand(i)，需要"状态"就从 t 重新算。
+
+  预览：直接用浏览器打开（空格播放/暂停，← → 逐帧，拖进度条）。
+  渲染：node scripts/render.mjs 本文件.html -o out.mp4
+        渲染器会在网址后加 ?render=1，并通过 window.__motion.seek(t) 逐帧取画面。
+
+  改造顺序：1 配置 → 2 旁白时间轴 → 3 舞台 HTML/CSS → 5 render(t)。工具函数(4)和运行时(6)一般不用动。
+-->
+<style>
+  :root {
+    --bg: #F3EFE6;      /* 纸色底 */
+    --ink: #16181D;     /* 主文字 */
+    --muted: #8C877C;   /* 次要信息 */
+    --line: #CFC8B8;    /* 辅助线 */
+    --accent: #E2552B;  /* 全片唯一强调色：只给"英雄物" */
+  }
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; }
+  #stage {
+    position: absolute; left: 0; top: 0;
+    width: 1080px; height: 1920px;            /* 与 CONFIG 一致 */
+    transform-origin: 0 0; overflow: hidden;
+    background: var(--bg); color: var(--ink);
+    font-family: "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    font-variant-numeric: tabular-nums;
+  }
+  .abs { position: absolute; }
+  #kicker { left: 90px; top: 150px; font-size: 30px; letter-spacing: 6px; color: var(--muted); }
+  #kicker b { color: var(--ink); font-weight: 700; letter-spacing: 2px; }
+  #kickerRule { left: 90px; top: 206px; width: 900px; height: 2px; background: var(--ink); transform-origin: 0 50%; }
+
+  svg#viz { left: 0; top: 0; width: 1080px; height: 1920px; overflow: visible; }
+  .tick-label { font-size: 22px; fill: var(--muted); text-anchor: end; dominant-baseline: middle; }
+  .ms-label { font-size: 28px; fill: var(--muted); }
+  .ms-value { font-size: 24px; fill: var(--muted); text-anchor: end; }
+
+  #readout { left: 90px; top: 1090px; width: 900px; height: 150px; display: flex; align-items: baseline; justify-content: space-between; }
+  #readout .k { font-size: 34px; color: var(--muted); }
+  #foldNum { font-size: 128px; font-weight: 900; line-height: 1; margin: 0 10px; display: inline-block; min-width: 1.2em; text-align: center; }
+  #thick { font-size: 64px; font-weight: 700; }
+
+  .cmp { left: 90px; width: 900px; height: 64px; }
+  .cmp .lab { position: absolute; left: 0; top: 0; font-size: 26px; color: var(--muted); }
+  .cmp .val { position: absolute; right: 0; top: 0; font-size: 26px; font-weight: 700; }
+  .cmp .bar { position: absolute; left: 0; top: 40px; height: 16px; width: 900px; transform-origin: 0 50%; background: var(--ink); }
+  #cmpB .bar { background: var(--accent); }
+  #cmpB .lab, #cmpB .val { color: var(--accent); }
+
+  /* 字幕从底部安全线往上排：一行时贴着安全线，折成两行时自动往上长。
+     竖屏底部约 400px 会被平台文案和按钮挡住，那里只放可以被挡的次要信息（比如下面的脚注）。 */
+  #sub {
+    left: 60px; width: 960px; bottom: 410px; text-align: center;
+    font-size: 54px; font-weight: 700; line-height: 1.3;
+  }
+  #foot { left: 90px; width: 900px; top: 1580px; text-align: center; font-size: 24px; color: var(--muted); }
+
+  /* 预览控制条：渲染时隐藏 */
+  #controls { position: fixed; left: 0; right: 0; bottom: 0; height: 48px; display: flex; gap: 12px; align-items: center; padding: 0 16px; background: #1b1b1b; color: #ddd; font: 13px/1 ui-monospace, Menlo, monospace; }
+  #controls input[type=range] { flex: 1; }
+  #controls button { background: #333; color: #eee; border: 0; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+  .render #controls { display: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="kicker" class="abs">思想实验 · <b>一张纸能折到月球吗</b></div>
+  <div id="kickerRule" class="abs"></div>
+  <svg id="viz" class="abs" viewBox="0 0 1080 1920"></svg>
+  <div id="readout" class="abs">
+    <div><span class="k">对折</span><span id="foldNum">0</span><span class="k">次</span></div>
+    <div id="thick">0.1 mm</div>
+  </div>
+  <div id="cmpA" class="cmp abs" style="top:1268px"><div class="lab">地球 → 月球</div><div class="val">384,400 km</div><div class="bar"></div></div>
+  <div id="cmpB" class="cmp abs" style="top:1342px"><div class="lab">折 42 次的纸</div><div class="val">439,805 km</div><div class="bar"></div></div>
+  <div id="sub" class="abs"></div>
+  <div id="foot" class="abs">理想计算：0.1 mm × 2⁴² ≈ 439,805 km（现实里一张纸折不了这么多次）</div>
+</div>
+<div id="controls">
+  <button id="playBtn">❚❚</button>
+  <input id="scrub" type="range" min="0" step="0.001" value="0">
+  <span id="clock">0.00s</span>
+</div>
+
+<script>
+// ============================================================
+// 1. 配置：画幅 / 帧率 / 时长（秒）
+//    竖屏 1080×1920 · 方形 1080×1080 · 横屏 1920×1080
+// ============================================================
+const CONFIG = { width: 1080, height: 1920, fps: 30, duration: 12 };
+
+// ============================================================
+// 2. 旁白 / 字幕时间轴（秒）。有配音时用 scripts/build_cues.py 生成后整段替换。
+//    画面里的关键动作都应该挂在某句 cue 的 start 上，而不是写死的秒数。
+// ============================================================
+const CUES = [
+  { start: 0.3, end: 2.1,  text: "一张纸，大约 0.1 毫米厚。" },
+  { start: 2.3, end: 4.9,  text: "每对折一次，厚度就翻一倍。" },
+  { start: 5.1, end: 8.8,  text: "如果能折到第 42 次——" },
+  { start: 9.0, end: 11.0, text: "它的厚度，比地球到月球还远。" },
+];
+
+// ============================================================
+// 4. 工具函数（全是纯函数）
+// ============================================================
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, p) => a + (b - a) * p;
+const prog = (t, a, b) => clamp((t - a) / (b - a));          // t 在 [a,b] 里走到哪了：0..1
+const ease = {
+  outCubic: p => 1 - Math.pow(1 - p, 3),
+  outExpo: p => (p >= 1 ? 1 : 1 - Math.pow(2, -10 * p)),    // 快进慢停：入场默认用它
+  inExpo: p => (p <= 0 ? 0 : Math.pow(2, 10 * p - 10)),      // 退场/擦除
+  inOutCubic: p => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2),
+};
+// 临界阻尼弹簧：从 0 到 1、不过冲。dt = 距离触发时刻过了多少秒；omega 越大越快
+const spring = (dt, omega = 16) => (dt <= 0 ? 0 : 1 - (1 + omega * dt) * Math.exp(-omega * dt));
+// 欠阻尼弹簧：有一点过冲（zeta 0.8 ≈ 1.5% 过冲）。要过冲就用它，别超过约 2%
+const springSoft = (dt, omega = 16, zeta = 0.8) => {
+  if (dt <= 0) return 0;
+  const wd = omega * Math.sqrt(1 - zeta * zeta);
+  return 1 - Math.exp(-zeta * omega * dt) * (Math.cos(wd * dt) + (zeta * omega / wd) * Math.sin(wd * dt));
+};
+// 无状态随机：同一个 i 永远得到同一个数（替代 Math.random）
+const rand = (i, seed = 1) => {
+  let h = (Math.imul(i | 0, 374761393) + Math.imul(seed | 0, 668265263)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+};
+// 当前生效的字幕
+const cueAt = t => CUES.find(c => t >= c.start && t < c.end) || null;
+
+// ============================================================
+// 3'. 舞台搭建：只在启动时执行一次，建好元素，之后只改属性
+// ============================================================
+const $ = id => document.getElementById(id);
+const SVGNS = "http://www.w3.org/2000/svg";
+const svg = $("viz");
+const mk = (tag, attrs = {}, parent = svg) => {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) {
+    // var(--x) 写进 style 才生效（SVG 的展示属性不认 CSS 变量）
+    if ((k === "fill" || k === "stroke") && String(attrs[k]).startsWith("var(")) el.style[k] = attrs[k];
+    else el.setAttribute(k, attrs[k]);
+  }
+  parent.appendChild(el);
+  return el;
+};
+
+// 对数标尺：0.1 mm (1e-4 m) 到 1e9 m，共 13 个数量级
+const AX = 230, Y0 = 1060, Y1 = 260, DEC = 13, PPD = (Y0 - Y1) / DEC;
+const yOfLog = d => Y0 - d * PPD;                  // d = 比 0.1mm 高出几个数量级
+const LOG2 = Math.log10(2);
+const tickNames = ["0.1mm", "1mm", "1cm", "10cm", "1m", "10m", "100m", "1km", "10km", "100km", "1000km", "1万km", "10万km", "100万km"];
+
+const sheet = mk("line", { x1: AX, y1: Y0, x2: 960, y2: Y0, stroke: "var(--ink)", "stroke-width": 4 });
+const sheetLabel = mk("text", { x: 960, y: Y0 + 44, class: "ms-value" }); sheetLabel.textContent = "0.1 mm";
+const axis = mk("line", { x1: AX, y1: Y0, x2: AX, y2: Y1, stroke: "var(--ink)", "stroke-width": 2 });
+const ticks = tickNames.map((name, i) => {
+  const g = mk("g");
+  mk("line", { x1: AX - 12, y1: yOfLog(i), x2: AX, y2: yOfLog(i), stroke: "var(--ink)", "stroke-width": 2 }, g);
+  const tx = mk("text", { x: AX - 22, y: yOfLog(i), class: "tick-label" }, g); tx.textContent = name;
+  return g;
+});
+const column = mk("rect", { x: 262, width: 110, y: Y0, height: 0, fill: "var(--ink)" });
+const columnTip = mk("rect", { x: 262, width: 110, y: Y0, height: 6, fill: "var(--accent)" });
+
+const MILESTONES = [
+  { m: 1.3e-2, name: "一本书", val: "1.3 cm" },
+  { m: 13, name: "四层楼", val: "13 m" },
+  { m: 8849, name: "珠穆朗玛峰", val: "8,849 m" },
+  { m: 4.0e5, name: "空间站轨道", val: "约 400 km" },
+  { m: 3.844e8, name: "月球", val: "384,400 km", hero: true },
+].map((ms, i) => {
+  const d = Math.log10(ms.m / 1e-4);
+  const y = yOfLog(d);
+  const g = mk("g");
+  const ln = mk("line", { x1: 390, y1: y, x2: 990, y2: y, stroke: "var(--line)", "stroke-width": 2, "stroke-dasharray": "8 8" }, g);
+  const lb = mk("text", { x: 400, y: y - 14, class: "ms-label" }, g); lb.textContent = ms.name;
+  const vl = mk("text", { x: 990, y: y - 14, class: "ms-value" }, g); vl.textContent = ms.val;
+  return { ...ms, i, d, n: d / LOG2, g, ln, lb, vl };
+});
+
+// ============================================================
+// 5. render(t)：唯一改画面的函数。每一帧从 t 重新算出全部属性。
+// ============================================================
+const STEP_T0 = 2.4, STEP_GAP = 0.36, STEPS = 7;     // 前 7 次一下一下折
+const RUSH_A = 5.1, RUSH_B = 8.4;                    // 之后加速冲到 42
+
+function foldsAt(t) {
+  let n = 0;
+  for (let k = 0; k < STEPS; k++) n += spring(t - (STEP_T0 + k * STEP_GAP), 18);
+  return n + 35 * ease.inOutCubic(prog(t, RUSH_A, RUSH_B));
+}
+function fmtLen(m) {
+  if (m < 0.01) return (m * 1000).toFixed(1) + " mm";
+  if (m < 1) return (m * 100).toFixed(1) + " cm";
+  if (m < 1000) return (m < 100 ? m.toFixed(1) : Math.round(m)) + " m";
+  return Math.round(m / 1000).toLocaleString("en-US") + " km";
+}
+const fade = (el, p, dy = 0) => { el.style.opacity = p; el.style.transform = `translateY(${(1 - p) * dy}px)`; };
+
+function render(t) {
+  // 顶部标题：0–0.6s 入场
+  const pk = ease.outExpo(prog(t, 0.0, 0.6));
+  fade($("kicker"), pk, 24);
+  $("kickerRule").style.transform = `scaleX(${ease.outExpo(prog(t, 0.15, 0.9))})`;
+
+  // 纸面线：画出来
+  const ps = ease.outExpo(prog(t, 0.2, 1.0));
+  sheet.setAttribute("x2", lerp(AX, 960, ps));
+  sheetLabel.style.opacity = ease.outCubic(prog(t, 0.7, 1.1));
+
+  // 标尺：轴线自下而上长出，刻度错开 2 帧依次出现
+  axis.setAttribute("y2", lerp(Y0, Y1, ease.outExpo(prog(t, 0.6, 1.6))));
+  ticks.forEach((g, i) => { g.style.opacity = ease.outCubic(prog(t, 0.6 + i * 0.066, 0.9 + i * 0.066)); });
+
+  // 里程碑：先以灰色虚线出现（目的地），被柱子越过后点亮
+  const n = foldsAt(t);
+  MILESTONES.forEach(ms => {
+    const pIn = ease.outExpo(prog(t, 1.2 + ms.i * 0.1, 1.8 + ms.i * 0.1));
+    ms.g.style.opacity = pIn;
+    ms.ln.setAttribute("x2", lerp(390, 990, pIn));
+    const passed = n >= ms.n;
+    const hot = ms.hero && passed;
+    ms.lb.style.fill = hot ? "var(--accent)" : passed ? "var(--ink)" : "var(--muted)";
+    ms.lb.style.fontWeight = passed ? 700 : 400;
+    ms.vl.style.fill = hot ? "var(--accent)" : passed ? "var(--ink)" : "var(--muted)";
+    ms.ln.style.stroke = hot ? "var(--accent)" : passed ? "var(--ink)" : "var(--line)";
+  });
+
+  // 柱子：对数标尺上，每折一次长高同样一截（0.301 个数量级）
+  const top = yOfLog(n * LOG2);
+  const show = prog(t, STEP_T0 - 0.1, STEP_T0);
+  column.setAttribute("y", top); column.setAttribute("height", Y0 - top);
+  columnTip.setAttribute("y", top - 3);
+  column.style.opacity = show; columnTip.style.opacity = show;
+
+  // 读数：折数取整，数字只在运动中滚动，落定后干脆
+  const N = Math.min(42, Math.floor(n + 0.02));
+  fade($("readout"), ease.outExpo(prog(t, 2.2, 2.7)), 30);
+  $("foldNum").textContent = N;
+  $("foldNum").style.color = N >= 42 ? "var(--accent)" : "var(--ink)";
+  $("thick").textContent = fmtLen(1e-4 * Math.pow(2, N));
+
+  // 结尾对比：线性比例的两根条，看清"多出来的 14%"
+  const pa = ease.outExpo(prog(t, 9.0, 9.9)), pb = ease.outExpo(prog(t, 9.15, 10.05));
+  fade($("cmpA"), ease.outCubic(prog(t, 9.0, 9.3)), 16);
+  fade($("cmpB"), ease.outCubic(prog(t, 9.15, 9.45)), 16);
+  $("cmpA").querySelector(".bar").style.transform = `scaleX(${0.874 * pa})`;
+  $("cmpB").querySelector(".bar").style.transform = `scaleX(${pb})`;
+
+  // 字幕：同一时间只有一句；进场 0.18s 上浮，离场 0.12s 淡出。
+  // 最后一句不淡出，陪着收尾定格到结束（配音后面通常还有 1 秒留白）。
+  const last = CUES[CUES.length - 1];
+  const c = cueAt(t) || (t >= last.end ? last : null), sub = $("sub");
+  if (c) {
+    sub.textContent = c.text;
+    const pin = ease.outExpo(prog(t, c.start, c.start + 0.18));
+    const pout = c === last ? 1 : 1 - prog(t, c.end - 0.12, c.end);
+    sub.style.opacity = Math.min(pin, pout);
+    sub.style.transform = `translateY(${(1 - pin) * 18}px)`;
+  } else {
+    sub.style.opacity = 0;
+  }
+
+  // 脚注：最后给出算式与说明（事实护栏）
+  $("foot").style.opacity = ease.outCubic(prog(t, 10.3, 10.9));
+  // 11.0–12.0：全部静止，留 1 秒收尾
+}
+
+// ============================================================
+// 6. 运行时：预览播放器 + 渲染协议（一般不用改）
+// ============================================================
+const isRender = new URLSearchParams(location.search).has("render");
+document.documentElement.classList.toggle("render", isRender);
+const stage = $("stage");
+
+function fit() {
+  if (isRender) { stage.style.transform = "none"; return; }
+  const s = Math.min(innerWidth / CONFIG.width, (innerHeight - 48) / CONFIG.height);
+  stage.style.transform = `translate(${(innerWidth - CONFIG.width * s) / 2}px, 0) scale(${s})`;
+}
+addEventListener("resize", fit); fit();
+
+window.__motion = {
+  width: CONFIG.width, height: CONFIG.height, fps: CONFIG.fps, duration: CONFIG.duration,
+  // 用了 @font-face 字体文件时，要把字体显式加载进来再算 ready，否则可能先渲出备用字体：
+  // ready: Promise.all([document.fonts.load('900 120px "MyTitle"'), document.fonts.load('500 54px "MyBody"')]),
+  ready: document.fonts.ready,
+  seek(t) { render(clamp(t, 0, CONFIG.duration)); },
+};
+render(0);
+
+if (!isRender) {
+  const scrub = $("scrub"), clock = $("clock"), btn = $("playBtn");
+  scrub.max = CONFIG.duration;
+  let playing = true, cur = 0, last = performance.now();
+  const set = t => { cur = clamp(t, 0, CONFIG.duration); render(cur); scrub.value = cur; clock.textContent = cur.toFixed(2) + "s"; };
+  btn.onclick = () => { playing = !playing; btn.textContent = playing ? "❚❚" : "▶"; };
+  scrub.oninput = () => { playing = false; btn.textContent = "▶"; set(+scrub.value); };
+  addEventListener("keydown", e => {
+    if (e.code === "Space") { e.preventDefault(); btn.onclick(); }
+    if (e.code === "ArrowRight") { playing = false; btn.textContent = "▶"; set(cur + 1 / CONFIG.fps); }
+    if (e.code === "ArrowLeft") { playing = false; btn.textContent = "▶"; set(cur - 1 / CONFIG.fps); }
+  });
+  (function loop(now) {
+    if (playing) { let t = cur + (now - last) / 1000; if (t >= CONFIG.duration) t = 0; set(t); }
+    last = now;
+    requestAnimationFrame(loop);
+  })(performance.now());
+}
+</script>
+</body>
+</html>
